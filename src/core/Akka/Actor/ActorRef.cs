@@ -65,9 +65,9 @@ namespace Akka.Actor
     /// <summary>
     /// TBD
     /// </summary>
-    public class FutureActorRef : MinimalActorRef
+    public class FutureActorRef<T> : MinimalActorRef
     {
-        private readonly TaskCompletionSource<object> _result;
+        private readonly TaskCompletionSource<T> _result;
         private readonly bool _tcsWasCreatedWithRunContinuationsAsynchronouslyAvailable;
         private readonly Action _unregister;
         private readonly ActorPath _path;
@@ -76,10 +76,9 @@ namespace Akka.Actor
         /// TBD
         /// </summary>
         /// <param name="result">TBD</param>
-        /// <param name="unregister">TBD</param>
         /// <param name="path">TBD</param>
-        public FutureActorRef(TaskCompletionSource<object> result, Action unregister, ActorPath path)
-            : this(result, unregister, path, false)
+        public FutureActorRef(TaskCompletionSource<T> result, ActorPath path)
+            : this(result, path, false)
         {
         }
 
@@ -87,9 +86,9 @@ namespace Akka.Actor
         /// TBD
         /// </summary>
         /// <param name="result">TBD</param>
-        /// <param name="unregister">TBD</param>
         /// <param name="path">TBD</param>
-        public FutureActorRef(TaskCompletionSource<object> result, Action unregister, ActorPath path, bool tcsWasCreatedWithRunContinuationsAsynchronouslyAvailable)
+        /// <param name="tcsWasCreatedWithRunContinuationsAsynchronouslyAvailable"></param>
+        public FutureActorRef(TaskCompletionSource<T> result, ActorPath path, bool tcsWasCreatedWithRunContinuationsAsynchronouslyAvailable)
         {
             if (ActorCell.Current != null)
             {
@@ -97,9 +96,7 @@ namespace Akka.Actor
             }
             _result = result;
             _tcsWasCreatedWithRunContinuationsAsynchronouslyAvailable = tcsWasCreatedWithRunContinuationsAsynchronouslyAvailable;
-            _unregister = unregister;
             _path = path;
-            _result.Task.ContinueWith(_ => _unregister());
         }
 
         /// <summary>
@@ -141,10 +138,27 @@ namespace Akka.Actor
             {
                 if (Interlocked.Exchange(ref status, COMPLETED) == INITIATED)
                 {
+                    void consumeResult()
+                    {
+                        try
+                        {
+                            _result.TrySetResult((T)message);
+                        }
+                        catch (InvalidCastException e)
+                        {
+                            _result.TrySetException(e);
+                        }
+                    }
+
                     if (_tcsWasCreatedWithRunContinuationsAsynchronouslyAvailable)
-                        _result.TrySetResult(message);
+                    {
+                        consumeResult();
+                    }
                     else
-                        Task.Run(() => _result.TrySetResult(message));
+                    {
+                        Task.Run(() => consumeResult());
+                    }
+                        
                 }
             }
         }
@@ -308,7 +322,7 @@ namespace Akka.Actor
         /// <inheritdoc/>
         public override string ToString()
         {
-            if(Path.Uid == ActorCell.UndefinedUid) return $"[{Path}]";
+            if (Path.Uid == ActorCell.UndefinedUid) return $"[{Path}]";
             return $"[{Path}#{Path.Uid}]";
         }
 
@@ -340,13 +354,13 @@ namespace Akka.Actor
         {
             if (obj != null && !(obj is IActorRef))
                 throw new ArgumentException("Object must be of type IActorRef.", nameof(obj));
-            return CompareTo((IActorRef) obj);
+            return CompareTo((IActorRef)obj);
         }
 
         /// <inheritdoc/>
         public bool Equals(IActorRef other)
         {
-            return Path.Uid == other.Path.Uid 
+            return Path.Uid == other.Path.Uid
                 && Path.Equals(other.Path);
         }
 
@@ -551,7 +565,7 @@ namespace Akka.Actor
         /// <inheritdoc cref="InternalActorRefBase"/>
         public override void SendSystemMessage(ISystemMessage message)
         {
-           
+
         }
 
         /// <inheritdoc cref="InternalActorRefBase"/>
@@ -746,12 +760,12 @@ namespace Akka.Actor
         /// </summary>
         /// <param name="name">TBD</param>
         /// <param name="child">TBD</param>
-        public void RemoveChild(string name,IActorRef child)
+        public void RemoveChild(string name, IActorRef child)
         {
             IInternalActorRef tmp;
             if (!_children.TryRemove(name, out tmp))
             {
-                Log.Warning("{0} trying to remove non-child {1}",Path,name);
+                Log.Warning("{0} trying to remove non-child {1}", Path, name);
             }
         }
 

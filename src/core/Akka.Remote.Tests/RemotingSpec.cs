@@ -163,7 +163,7 @@ namespace Akka.Remote.Tests
             //so the token is cancelled before the delay completed.. 
             var msg = await here.Ask<Tuple<string, IActorRef>>("ping", TimeSpan.FromSeconds(1.5));
             Assert.Equal("pong", msg.Item1);
-            Assert.IsType<FutureActorRef>(msg.Item2);
+            Assert.IsType<FutureActorRef<Tuple<string, IActorRef>>>(msg.Item2);
         }
 
         [Fact]

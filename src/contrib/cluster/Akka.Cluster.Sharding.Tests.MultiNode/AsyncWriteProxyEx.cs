@@ -11,12 +11,9 @@ using System.Collections.Immutable;
 using System.Linq;
 using System.Threading.Tasks;
 using Akka.Actor;
-using System.Runtime.Serialization;
-using Akka.Event;
 using Akka.Persistence.Journal;
 using Akka.Persistence;
 using System.Threading;
-using Akka.Util.Internal;
 using Akka.Actor.Internal;
 
 namespace Akka.Cluster.Sharding.Tests
@@ -363,21 +360,6 @@ namespace Akka.Cluster.Sharding.Tests
 
     internal static class FuturesEx
     {
-        public static Task<object> AskEx(this ICanTell self, Func<IActorRef, object> messageFactory, TimeSpan? timeout = null)
-        {
-            return self.AskEx<object>(messageFactory, timeout, CancellationToken.None);
-        }
-
-        public static Task<object> AskEx(this ICanTell self, Func<IActorRef, object> messageFactory, CancellationToken cancellationToken)
-        {
-            return self.AskEx<object>(messageFactory, null, cancellationToken);
-        }
-
-        public static Task<object> AskEx(this ICanTell self, Func<IActorRef, object> messageFactory, TimeSpan? timeout, CancellationToken cancellationToken)
-        {
-            return self.AskEx<object>(messageFactory, timeout, cancellationToken);
-        }
-
         public static Task<T> AskEx<T>(this ICanTell self, Func<IActorRef, object> messageFactory, TimeSpan? timeout = null)
         {
             return self.AskEx<T>(messageFactory, timeout, CancellationToken.None);
@@ -394,7 +376,7 @@ namespace Akka.Cluster.Sharding.Tests
             if (provider == null)
                 throw new ArgumentException("Unable to resolve the target Provider", nameof(self));
 
-            return AskEx(self, messageFactory, provider, timeout, cancellationToken).CastTask<object, T>();
+            return AskEx<T>(self, messageFactory, provider, timeout, cancellationToken);
         }
         internal static IActorRefProvider ResolveProvider(ICanTell self)
         {
@@ -410,18 +392,23 @@ namespace Akka.Cluster.Sharding.Tests
             return null;
         }
 
-        private static Task<object> AskEx(ICanTell self, Func<IActorRef, object> messageFactory, IActorRefProvider provider, TimeSpan? timeout, CancellationToken cancellationToken)
+        private static async Task<T> AskEx<T>(ICanTell self, Func<IActorRef, object> messageFactory, IActorRefProvider provider, TimeSpan? timeout, CancellationToken cancellationToken)
         {
-            var result = new TaskCompletionSource<object>();
+            var result = new TaskCompletionSource<T>();
 
             CancellationTokenSource timeoutCancellation = null;
             timeout = timeout ?? provider.Settings.AskTimeout;
-            List<CancellationTokenRegistration> ctrList = new List<CancellationTokenRegistration>(2);
+            var ctrList = new List<CancellationTokenRegistration>(2);
 
-            if (timeout != System.Threading.Timeout.InfiniteTimeSpan && timeout.Value > default(TimeSpan))
+            if (timeout != Timeout.InfiniteTimeSpan && timeout.Value > default(TimeSpan))
             {
                 timeoutCancellation = new CancellationTokenSource();
-                ctrList.Add(timeoutCancellation.Token.Register(() => result.TrySetCanceled()));
+
+                ctrList.Add(timeoutCancellation.Token.Register(() =>
+                {
+                    result.TrySetException(new AskTimeoutException($"Timeout after {timeout} seconds"));
+                }));
+
                 timeoutCancellation.CancelAfter(timeout.Value);
             }
 
@@ -430,29 +417,30 @@ namespace Akka.Cluster.Sharding.Tests
 
             //create a new tempcontainer path
             ActorPath path = provider.TempPath();
-            //callback to unregister from tempcontainer
-            Action unregister =
-                () =>
-                {
-                    // cancelling timeout (if any) in order to prevent memory leaks
-                    // (a reference to 'result' variable in CancellationToken's callback)
-                    if (timeoutCancellation != null)
-                    {
-                        timeoutCancellation.Cancel();
-                        timeoutCancellation.Dispose();
-                    }
-                    for (var i = 0; i < ctrList.Count; i++)
-                    {
-                        ctrList[i].Dispose();
-                    }
-                    provider.UnregisterTempActor(path);
-                };
 
-            var future = new FutureActorRef(result, unregister, path);
+            var future = new FutureActorRef<T>(result, path);
             //The future actor needs to be registered in the temp container
             provider.RegisterTempActor(future, path);
             self.Tell(messageFactory(future), future);
-            return result.Task;
+
+            try
+            {
+                return await result.Task;
+            }
+            finally
+            {
+                provider.UnregisterTempActor(path);
+
+                for (var i = 0; i < ctrList.Count; i++)
+                {
+                    ctrList[i].Dispose();
+                }
+
+                if (timeoutCancellation != null)
+                {
+                    timeoutCancellation.Dispose();
+                }
+            }
         }
     }
 }
